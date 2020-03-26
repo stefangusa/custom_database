@@ -1,14 +1,20 @@
 import json
+import logging
+import os
 import random
 import time
 
 from boto3.session import Session
 from collections import Counter
 from flask import Flask, request
+from flask.logging import default_handler
 import hashlib
 
 
 app = Flask(__name__)
+
+LOG_FILE = '/var/log/flask_app.log'
+os.environ['WERKZEUG_RUN_MAIN'] = 'true'
 
 SUCCESS = 200
 BAD_REQUEST = 400
@@ -23,8 +29,8 @@ NODE_NO = None
 NO_NODES = 3
 TOPIC_ARN = None
 
-session = Session(aws_access_key_id='',
-                  aws_secret_access_key='')
+session = Session(aws_access_key_id='AKIAYHGL2RUPE7EI25YF',
+                  aws_secret_access_key='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')
 sns = None
 sqs = None
 
@@ -152,7 +158,7 @@ def operate():
     return response, SUCCESS
 
 
-def run_flask(node_no, topic_arn):
+def run_flask(node_no, topic_arn, log_level):
     global NODE_NO, TOPIC_ARN, sns, sqs
     NODE_NO = node_no
     TOPIC_ARN = topic_arn
@@ -162,4 +168,17 @@ def run_flask(node_no, topic_arn):
     sqs = session.resource('sqs', region_name='eu-west-3') \
         .Queue("https://sqs.eu-west-3.amazonaws.com/565215661342/Node{}_Responses".format(NODE_NO))
 
-    app.run(port=80, use_reloader=False, debug=True)
+    logging.basicConfig(filename=LOG_FILE)
+    handler = logging.FileHandler(LOG_FILE)
+    handler.setLevel(log_level)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    app.logger.addHandler(handler)
+    app.logger.removeHandler(default_handler)
+
+    if log_level == logging.DEBUG:
+        debug = True
+    else:
+        debug = False
+
+    app.run(port=80, use_reloader=False, debug=debug)

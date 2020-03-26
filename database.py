@@ -17,6 +17,7 @@ LOG_FILE = '/var/log/database.log'
 flask_proc = None
 logger = None
 handler = None
+log_level = None
 
 NODE_NO = sys.argv[1]
 NO_NODES = 3
@@ -40,7 +41,6 @@ def run():
     global NO_NODES
 
     retries = 0
-
     while retries < 3:
         raw_messages = sqs.receive_messages()
         if not raw_messages:
@@ -51,6 +51,8 @@ def run():
 
         retries = 0
         message = json.loads(json.loads(raw_messages[0].body)['Message'])
+        logger.debug("Received %s.", json.dumps(message))
+
         if 'operation' in message:
             if message['operation'].lower() == 'select':
                 response = select_operation(message['attributes'], message['base_destination'])
@@ -63,6 +65,7 @@ def run():
             else:
                 continue
 
+            logger.debug("Response message: %s.", response)
             response_message = {
                 'response': response,
                 'id': message['id'],
@@ -71,18 +74,21 @@ def run():
             publish_sns(response_message, message['source'])
 
         elif 'replace' in message:
+            logger.info("Replacing node %s. Stopping flask application...", message['replace'])
             stop_flask()
 
             if message['replace'] == NODE_NO:
                 replace()
 
             elif int(NODE_NO) in [(int(message['replace']) - 1) % NO_NODES, (int(message['replace']) + 1) % NO_NODES]:
+                logger.info("The replaced node is a neighbour. Starting sending data...")
                 try:
                     with open(compute_filename(message['replace']), 'r') as f:
                         content = json.loads(f.read())
                 except FileNotFoundError:
                     content = {}
 
+                logger.debug("Sending the replicated data %s.", json.dumps(content))
                 response = {
                     'no_node': message['replace'],
                     'content': content
@@ -95,27 +101,36 @@ def run():
                 except FileNotFoundError:
                     content = {}
 
+                logger.debug("Sending the resident data to be replicated on the replaced node: %s.", json.dumps(content))
                 response = {
                     'no_node': NODE_NO,
                     'content': content
                 }
                 publish_sns(response, message['replace'], routing_attr='destination')
 
-            destination_list = '[' + ', '.join(['\"' + str(node) + '\"' for node in range(NO_NODES)]) + ']'
-            publish_sns({'start_flask': ''}, destination_list, data_type='String.Array')
+            logger.info("Finished the process of the replace.")
 
+            logger.debug("Publish a message to signal the replace has finished in order to start the flask application.")
+            destination_list = '[' + ', '.join(['\"' + str(node) + '\"' for node in range(NO_NODES)]) + ']'
+            publish_sns({'start_flask': NODE_NO}, destination_list, data_type='String.Array')
+
+            logger.debug("Waiting for all the other nodes to finish the replace in order to start the flask application")
             wait_start_flask()
 
         elif 'scale' in message:
+            logger.info("Scaling the cluster %s. Stopping flask application...", message['replace'])
             stop_flask()
 
+            logger.debug("The new size of the cluster: %s", message['scale'])
             NO_NODES = int(message['scale'])
 
             scale()
 
+            logger.debug("Publish a message to signal the scaling has finished in order to start the flask application.")
             destination_list = '[' + ', '.join(['\"' + str(node) + '\"' for node in range(NO_NODES)]) + ']'
-            publish_sns({'start_flask': ''}, destination_list, data_type='String.Array')
+            publish_sns({'start_flask': NODE_NO}, destination_list, data_type='String.Array')
 
+            logger.debug("Waiting for all the other nodes to finish the scaling in order to start the flask application")
             wait_start_flask()
 
         raw_messages[0].delete()
@@ -142,6 +157,7 @@ def publish_sns(content, str_value, routing_attr='source', data_type='String'):
 
 
 def select_operation(attributes, base_destination):
+    logger.debug("Select operation inquired: %s", ','.join([':'.join(key_value) for key_value in attributes]))
     (pk, pk_value) = attributes[0]
     try:
         with open(compute_filename(base_destination), 'r') as f:
@@ -154,18 +170,22 @@ def select_operation(attributes, base_destination):
                         return ''
             return ','.join([':'.join(key_value) for key_value in [(pk, pk_value)] + list(content[pk][pk_value].items())])
     except FileNotFoundError:
+        logger.warning("Database file not found.")
         return ''
 
 
 def insert_operation(attributes, base_destination):
+    logger.debug("Insert operation inquired: %s", ','.join([':'.join(key_value) for key_value in attributes]))
     (pk, pk_value) = attributes[0]
     try:
         with open(compute_filename(base_destination), 'r') as f:
             content = json.loads(f.read())
             if pk in content and pk_value in content[pk]:
+                logger.debug("Primary key %s:%s already exists.", pk, pk_value)
                 return 'Error'
     except FileNotFoundError:
         content = {}
+        logger.warning("Database file not found.")
         pass
 
     if pk in content:
@@ -184,13 +204,16 @@ def insert_operation(attributes, base_destination):
 
 
 def update_operation(attributes, base_destination):
+    logger.debug("Update operation inquired: %s", ','.join([':'.join(key_value) for key_value in attributes]))
     (pk, pk_value) = attributes[0]
     try:
         with open(compute_filename(base_destination), 'r') as f:
             content = json.loads(f.read())
             if pk not in content or pk_value not in content[pk]:
+                logger.debug("Primary key %s:%s already exists.", pk, pk_value)
                 return 'Error'
     except FileNotFoundError:
+        logger.warning("Database file not found.")
         return 'Error'
 
     if len(attributes) > 1:
@@ -204,13 +227,16 @@ def update_operation(attributes, base_destination):
 
 
 def delete_operation(attributes, base_destination):
+    logger.debug("Delete operation inquired: %s", ','.join([':'.join(key_value) for key_value in attributes]))
     (pk, pk_value) = attributes[0]
     try:
         with open(compute_filename(base_destination), 'r') as f:
             content = json.loads(f.read())
             if pk not in content or pk_value not in content[pk]:
+                logger.debug("Primary key %s:%s already exists.", pk, pk_value)
                 return 'Error'
     except FileNotFoundError:
+        logger.warning("Database file not found.")
         return 'Error'
 
     del content[pk][pk_value]
@@ -224,12 +250,14 @@ def delete_operation(attributes, base_destination):
 
 
 def replace():
+    logger.info("Replacing this node...")
     retries = 0
     received_files_from = set()
 
+    logger.debug("Receiving data from the neighbours.")
     while retries < 3:
+        logger.debug("Polling messages... Retry %d", retries + 1)
         raw_messages = sqs.receive_messages()
-
         if not raw_messages:
             time.sleep(5)
             retries += 1
@@ -240,24 +268,31 @@ def replace():
             raw_messages[0].delete()
             continue
 
+        logger.debug("Received %s from %s.", json.dumps(message['content']), message['no_node'])
         received_files_from.add(message['no_node'])
         with open(compute_filename(message['no_node']), 'w') as f:
             f.write(json.dumps(message['content']))
         raw_messages[0].delete()
 
         if received_files_from == [str((int(NODE_NO) - 1) % NO_NODES), NODE_NO, str((int(NODE_NO) - 1) % NO_NODES)]:
+            logger.debug("Received data from both neighbours.")
             sqs.purge()
             break
 
 
 def scale():
+    logger.info("Shutting down the flask application.")
     stop_flask()
+
+    logger.debug("Removing the replicated data on the node.")
     for f in os.listdir('.'):
         if '_repl.cdb' in f:
+            logger.debug("Removing %s.", f)
             os.remove(os.path.join('.', f))
 
     new_content = defaultdict(dict)
 
+    logger.info("Sending data to the new host.")
     try:
         with open(compute_filename(NODE_NO), 'r') as f:
             content = json.loads(f.read())
@@ -277,6 +312,7 @@ def scale():
                         )
                         new_content[pk][pk_value] = content[pk][pk_value]
 
+                    logger.debug("Sending %s to node %d.", ','.join([':'.join(key_value) for key_value in attributes]), base_destination)
                     message = {
                         'operation': 'scale',
                         'attributes': attributes,
@@ -287,11 +323,14 @@ def scale():
     except FileNotFoundError:
         pass
 
+    logger.debug("Writing the data which still resides on this node back.")
     with open(compute_filename(NODE_NO), 'w') as f:
         f.write(json.dumps(new_content))
 
+    logger.info("Receiving data from the other nodes in the cluster.")
     retries = 0
     while retries < 3:
+        logger.debug("Polling messages... Retry %d", retries + 1)
         raw_messages = sqs.receive_messages(MaxNumberOfMessages=10)
         if len(raw_messages) == 0:
             time.sleep(5)
@@ -304,6 +343,7 @@ def scale():
                 raw_message.delete()
                 continue
 
+            logger.debug("Received %s.", ','.join([':'.join(key_value) for key_value in attributes]))
             insert_operation(message['attributes'], message['base_destination'])
             raw_message.delete()
 
@@ -312,7 +352,10 @@ def wait_start_flask():
     retries = 0
     responses = 0
 
+    logger.info("Waiting for all the nodes to finish the operation in order to turn on the flask application.")
+
     while retries < 5:
+        logger.debug("Polling messages... Retry %d", retries + 1)
         raw_messages = sqs_resp.receive_messages(MaxNumberOfMessages=10)
         if len(raw_messages) == 0:
             time.sleep(5)
@@ -321,15 +364,17 @@ def wait_start_flask():
 
         for raw_message in raw_messages:
             message = json.loads(json.loads(raw_message.body)['Message'])
-
             if 'start_flask' in message:
                 responses += 1
+                logger.debug("Node %s finished.", message['start_flask'])
+
             raw_message.delete()
 
         if responses == NO_NODES:
+            logger.info("All the nodes finished the operation. Starting the flask application...")
             break
     else:
-        print("Could not restart flask")
+        logger.error("At least one node did not finish the operation successfully. Shutting down...")
         sys.exit(1)
 
     start_flask()
@@ -338,8 +383,11 @@ def wait_start_flask():
 def stop_flask():
     global flask_proc
     try:
+        logger.debug("Trying to stop flask application process.")
         flask_proc.terminate()
+        logger.debug("Stopped the flask application process.")
     except AttributeError:
+        logger.debug("The flask application process is not running.")
         pass
 
 
@@ -349,13 +397,16 @@ def start_flask():
     if flask_proc:
         return
 
-    flask_proc = multiprocessing.Process(target=run_flask, args=(NODE_NO, TOPIC_ARN), daemon=True)
+    logger.debug("Creating the flask application process.")
+    flask_proc = multiprocessing.Process(target=run_flask, args=(NODE_NO, TOPIC_ARN, log_level), daemon=True)
+    logger.debug("Trying to start flask application process.")
     flask_proc.start()
+    logger.debug("Started the flask application process.")
 
 
-def set_logging(log_level):
+def set_logging():
     global logger, handler
-    logger = logging.getLogger()
+    logger = logging.getLogger('custom_database')
     logger.setLevel(log_level)
 
     handler = logging.FileHandler(LOG_FILE)
@@ -373,14 +424,19 @@ def start_service():
     global STOP
     STOP = False
 
+    logger.info("Starting the custom database...")
     run()
 
 
 def stop_service():
+    logger.debug("Stopping the flask application...")
     stop_flask()
+    logger.debug("Flask application stopped.")
 
+    logger.debug("Stopping the custom database...")
     global STOP
     STOP = True
+    logger.info("Custom database shut down.")
 
 
 if __name__ == '__main__':
@@ -389,18 +445,17 @@ if __name__ == '__main__':
         print('Usage: python3 database.py <NO. NODES> start | stop | restart | debug')
         sys.exit(0)
 
-    if sys.argv[2] == 'start':
-        set_logging(logging.INFO)
+    log_level = logging.DEBUG if sys.argv[2] == 'debug' else logging.INFO
+
+    if sys.argv[2] in ['start', 'debug']:
+        set_logging()
         start_service()
     elif sys.argv[2] == 'stop':
-        set_logging(logging.INFO)
+        set_logging()
         stop_service()
     elif sys.argv[2] == 'restart':
-        set_logging(logging.INFO)
+        set_logging()
         stop_service()
-        start_service()
-    elif sys.argv[2] == 'debug':
-        set_logging(logging.DEBUG)
         start_service()
     else:
         print('Usage: python3 database.py <NO. NODES> start | stop | restart | debug')
