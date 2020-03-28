@@ -23,7 +23,7 @@ NODE_NO = sys.argv[1]
 NO_NODES = 3
 TOPIC_ARN = "arn:aws:sns:eu-west-3:565215661342:Channel"
 
-FILE_PATH = './Node'
+FILE_PATH = '/etc/custom_database/Node'
 
 session = Session(aws_access_key_id='',
                   aws_secret_access_key='')
