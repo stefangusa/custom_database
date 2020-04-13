@@ -23,7 +23,7 @@ NODE_NO = sys.argv[1]
 NO_NODES = 3
 TOPIC_ARN = "arn:aws:sns:eu-west-3:565215661342:Channel"
 
-FILE_PATH = '/etc/custom_database/Node'
+FILE_PATH = '/etc/custom_database/'
 
 session = Session(aws_access_key_id='',
                   aws_secret_access_key='')
@@ -118,7 +118,7 @@ def run():
             wait_start_flask()
 
         elif 'scale' in message:
-            logger.info("Scaling the cluster %s. Stopping flask application...", message['replace'])
+            logger.info("Scaling the cluster to %s nodes. Stopping flask application...", message['scale'])
             stop_flask()
 
             logger.debug("The new size of the cluster: %s", message['scale'])
@@ -138,9 +138,9 @@ def run():
 
 def compute_filename(base_destination):
     if base_destination == NODE_NO:
-        return '{0}{1}.cdb'.format(FILE_PATH, base_destination)
+        return '{0}Node{1}.cdb'.format(FILE_PATH, base_destination)
     else:
-        return '{0}{1}_repl.cdb'.format(FILE_PATH, base_destination)
+        return '{0}Node{1}_repl.cdb'.format(FILE_PATH, base_destination)
 
 
 def publish_sns(content, str_value, routing_attr='source', data_type='String'):
@@ -285,7 +285,7 @@ def scale():
     stop_flask()
 
     logger.debug("Removing the replicated data on the node.")
-    for f in os.listdir('.'):
+    for f in os.listdir(FILE_PATH):
         if '_repl.cdb' in f:
             logger.debug("Removing %s.", f)
             os.remove(os.path.join('.', f))
@@ -343,7 +343,7 @@ def scale():
                 raw_message.delete()
                 continue
 
-            logger.debug("Received %s.", ','.join([':'.join(key_value) for key_value in attributes]))
+            logger.debug("Received %s.", ','.join([':'.join(key_value) for key_value in message['attributes']]))
             insert_operation(message['attributes'], message['base_destination'])
             raw_message.delete()
 
@@ -394,7 +394,7 @@ def stop_flask():
 def start_flask():
     global flask_proc
 
-    if flask_proc:
+    if flask_proc and flask_proc.is_alive():
         return
 
     logger.debug("Creating the flask application process.")
@@ -442,7 +442,7 @@ def stop_service():
 if __name__ == '__main__':
 
     if len(sys.argv) < 3:
-        print('Usage: python3 database.py <NO. NODES> start | stop | restart | debug')
+        print('Usage: python3 database.py <NODE NO.> start | stop | restart | debug')
         sys.exit(0)
 
     log_level = logging.DEBUG if sys.argv[2] == 'debug' else logging.INFO
@@ -458,6 +458,6 @@ if __name__ == '__main__':
         stop_service()
         start_service()
     else:
-        print('Usage: python3 database.py <NO. NODES> start | stop | restart | debug')
+        print('Usage: python3 database.py <NODE NO.> start | stop | restart | debug')
 
 

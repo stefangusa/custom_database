@@ -29,8 +29,8 @@ NODE_NO = None
 NO_NODES = 3
 TOPIC_ARN = None
 
-session = Session(aws_access_key_id='AKIAYHGL2RUPE7EI25YF',
-                  aws_secret_access_key='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')
+session = Session(aws_access_key_id='',
+                  aws_secret_access_key='')
 sns = None
 sqs = None
 
@@ -54,6 +54,12 @@ def parse_query(query):
 
 @app.route('/replace/<node_no>')
 def replace(node_no):
+    try:
+        if int(node_no) >= NO_NODES:
+            raise ValueError
+    except ValueError:
+        return "Node number should be an integer between 0 and {}".format(NO_NODES), BAD_REQUEST
+
     destination_list = '[' + ', '.join(['\"' + str(node) + '\"' for node in range(NO_NODES)]) + ']'
 
     sns.publish(
@@ -72,6 +78,12 @@ def replace(node_no):
 
 @app.route('/scale/<no_nodes>')
 def scale(no_nodes):
+    try:
+        if int(no_nodes) < 3 or int(no_nodes) > 10:
+            raise ValueError
+    except ValueError:
+        return "No. nodes must be an integer between 3 and 10.", BAD_REQUEST
+
     global NO_NODES
 
     destination_list = '[' + ', '.join(['\"' + str(node) + '\"' for node in range(max(int(no_nodes), NO_NODES))]) + ']'
@@ -89,6 +101,11 @@ def scale(no_nodes):
     )
 
     return "Scaling in progress", SUCCESS
+
+
+@app.route('/check')
+def working():
+    return "Working!", SUCCESS
 
 
 @app.route('/', methods=["POST"])
@@ -181,4 +198,4 @@ def run_flask(node_no, topic_arn, log_level):
     else:
         debug = False
 
-    app.run(port=80, use_reloader=False, debug=debug)
+    app.run(host='0.0.0.0', port=80, use_reloader=False, debug=debug)
